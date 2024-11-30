@@ -1,0 +1,7 @@
+config {
+  type: "declaration",
+  schema: constants.GDRIVE_SOURCE_DATASET,
+  ...(constants.GDRIVE_SOURCE_PROJECT) && {database: constants.GDRIVE_SOURCE_PROJECT},
+  name: "manual_costs_periodic",
+  description: "This is the table that stores daily costs from the google sheet for manual input INSERT YOUR LINK HERE"
+}

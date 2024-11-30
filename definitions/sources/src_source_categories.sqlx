@@ -1,0 +1,8 @@
+config {
+  type: "table",
+  schema: constants.STAGING_DATASET,
+  name: "src_source_categories",
+  description: "This table stores GA4 source category mappings as per https://support.google.com/analytics/answer/9756891?hl=en#list"
+}
+
+${helpers.selectSourceCategories()}

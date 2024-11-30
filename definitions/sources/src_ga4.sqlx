@@ -1,0 +1,7 @@
+config {
+  type: "declaration",
+  schema: constants.GA4_SOURCE_DATASET,
+  ...(constants.GA4_SOURCE_PROJECT) && {database: constants.GA4_SOURCE_PROJECT},
+  name: "events_*",
+  description: "This table stores event exports from GA4 to BigQuery"
+}

@@ -1,0 +1,5 @@
+defaultProject: unicef-global-data
+defaultLocation: US
+defaultDataset: demo_dataform
+defaultAssertionDataset: demo_dataform_assertions
+dataformCoreVersion: 3.0.0

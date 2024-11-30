@@ -1,0 +1,100 @@
+config {
+  type: "incremental",
+  schema: constants.STAGING_DATASET,
+  description: "This GA4 model is event-based. Here, misattribution of Google Ads is corrected, and values for ad campaign, ad group, and ad name are added where possible.",
+  tags:["ga4","ga4_daily"],
+  bigquery: {
+    partitionBy: "event_date",
+    clusterBy: ["event_name","user_key", "ga_session_key"]
+  }
+}
+
+pre_operations {
+  declare event_date_checkpoint default (
+    ${when(incremental(),
+      `select max(event_date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where event_date >= event_date_checkpoint`)
+  }
+}
+
+with staging as (
+    select
+        stg_events.* except(event_traffic_source, collected_traffic_source),
+        
+        --The following is designed to address the misattribution of Google Ads in GA4 raw data and to assign names to campaigns, ad groups, and ads where only IDs are present.
+        (
+        select
+        as struct
+            event_traffic_source.source as source,
+            event_traffic_source.medium as medium,
+            event_traffic_source.campaign as campaign,
+            event_traffic_source.content as content,
+            event_traffic_source.term as term,
+            event_traffic_source.gclid as gclid,
+            event_traffic_source.dclid as dclid,
+            ${helpers.fixPaidGoogleTrafficSource('event_traffic_source', 'source', 'stg_events', null)} as fixed_source,
+            ${helpers.fixPaidGoogleTrafficSource('event_traffic_source', 'medium', 'stg_events', null)} as fixed_medium,
+            ${helpers.fixPaidGoogleTrafficSource('event_traffic_source', 'campaign', 'stg_events', 'stg_ads_click_campaign.campaign_name')} as fixed_campaign,
+            ${helpers.fixPaidGoogleTrafficSource('event_traffic_source', 'term', 'stg_events', 'stg_ads_click_campaign.term' )} as fixed_term,
+            ${helpers.getPaidGoogleTrafficSource('event_traffic_source', 'ad_name', 'stg_events', 'stg_ads_click_campaign.ad_name')} as fixed_ad_name,
+            ${helpers.getPaidGoogleTrafficSource('event_traffic_source', 'ad_group_name', 'stg_events', 'stg_ads_click_campaign.ad_group_name')} as fixed_adgroup_name            
+        ) as event_traffic_source,
+        (
+        select
+        as struct
+            ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_source', 'stg_events', null)} as fixed_source,
+            ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_medium', 'stg_events', null)} as fixed_medium,
+            ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_campaign_name', 'stg_events', 'stg_ads_click_campaign.campaign_name')} as fixed_campaign,
+            ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_campaign_id', 'stg_events', 'stg_ads_click_campaign.campaign_id' )} as fixed_campaign_id,
+            ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_term', 'stg_events', 'stg_ads_click_campaign.term' )} as fixed_term,
+            ${helpers.getPaidGoogleTrafficSource('collected_traffic_source', 'ad_name', 'stg_events', 'stg_ads_click_campaign.ad_name')} as fixed_ad_name,
+            ${helpers.getPaidGoogleTrafficSource('collected_traffic_source', 'ad_group_name', 'stg_events', 'stg_ads_click_campaign.ad_group_name')} as fixed_adgroup_name,
+            ${helpers.getPaidGoogleTrafficSource('collected_traffic_source', 'ad_group_id', 'stg_events', 'stg_ads_click_campaign.ad_group_id')} as fixed_adgroup_id,
+            collected_traffic_source.manual_campaign_id as manual_campaign_id,
+            collected_traffic_source.manual_campaign_name as manual_campaign_name,
+            collected_traffic_source.manual_source as manual_source,
+            collected_traffic_source.manual_medium as manual_medium,
+            collected_traffic_source.manual_content as manual_content,
+            collected_traffic_source.manual_term as manual_term,
+            collected_traffic_source.gclid,
+            collected_traffic_source.dclid
+        ) as collected_traffic_source,
+
+        case
+            when (src_non_custom_events.event_name is null and stg_events.event_traffic_source.medium is null)
+            --stg_non_custom_events.event_name is null indicates the event is a custom event.
+                then 3
+            when stg_events.event_name in ('firebase_campaign', 'campaign_details')
+                then 1
+            when stg_events.event_name in ('first_visit', 'first_open')
+                then 0
+            else 2
+        end as event_sort_order --event source order is used to define the event priority in case it falls on the same timestamp of another when determining session traffic sources.
+    from ${ref('stg_ga4_events')} as stg_events
+        left join ${ref('src_non_custom_events')} as src_non_custom_events 
+        on stg_events.event_name = src_non_custom_events.event_name
+        --the above join on stg_non_custom_events aims to identify custom events from automatically collected and recommended events.
+        --custom events sometimes miss values for traffic sources and could cause attribution errors
+        --when trying to identify the first traffic source for sessions with custom event
+        --that are sent with no values for source/medium on the exact same timestamp as the first session event (page_view etc...),
+        --we see an overattribution to null traffic sources.
+        left join ${ref('stg_gads_click_campaign')} as stg_ads_click_campaign 
+        on stg_events.collected_traffic_source.gclid = stg_ads_click_campaign.gclid
+    where event_date >= event_date_checkpoint
+)
+select
+    *
+from staging
+
+/*if you want to include hits from all domains available in your GA4 property remove the following where clause. 
+This is to include only "real" hits, excluding those from test environments. The list should be correctly populated in constants.js */
+where page_hostname in (${constants.GA4_DOMAINS_LIST}) 
+or debugMode = "true"
+
+
+

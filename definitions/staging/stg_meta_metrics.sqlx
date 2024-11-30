@@ -1,0 +1,50 @@
+config {
+  type: "incremental",
+  schema: constants.STAGING_DATASET,
+  description: "Staging model for data from Meta accounts to retrieve impressions, clicks, and costs for campaigns, ad sets, and ads.",
+  tags:["meta","meta_daily"],
+  bigquery: {
+    partitionBy: "date",
+    clusterBy: ["account_id", "campaign_id"]
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where date >= date_checkpoint`)
+  }
+}
+
+with facebook_datatransfer as (            
+select                                 
+  DateStart as date,
+  AdAccountId as account_id,
+  AdAccountName as account_name,
+  AccountCurrency as currency,
+  CampaignId as campaign_id,
+  CampaignName as campaign_name,
+  AdSetId as ad_set_id,
+  AdSetName as ad_set_name,
+  AdId as ad_id,
+  AdName as ad_name,
+  round(sum(Impressions),2) as impressions,
+  round(sum(Spend),2) as spend,
+  round(sum(Clicks),2) as clicks
+from ${ref('AdInsights')}
+  where 
+  _PARTITIONTIME >= timestamp(date_checkpoint)
+  and cast(AdAccountId as INT64) in (${constants.META_ACCOUNT_ID})
+  group by all
+  having impressions > 0 OR spend > 0 OR clicks > 0
+)
+
+
+select * 
+from facebook_datatransfer

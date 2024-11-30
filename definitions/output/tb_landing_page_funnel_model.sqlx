@@ -1,0 +1,97 @@
+config {
+  type: "incremental",
+  schema: constants.OUTPUT_DATASET,
+  description: "This model is based on GA4 data and is designed for use in Looker Studio for Funnel Reports",
+  tags:["ga4","ga4_daily", "channel_group"],
+  bigquery: {
+    partitionBy: "date",
+    clusterBy: ["source", "medium","channel","landing_page_path"]
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where date >= date_checkpoint`)
+  }
+}
+
+with sessions_base as (
+    select 
+        session_start_date as date,
+        landing_hostname,
+        landing_page_path,
+        session_city,
+        landing_exp_variant_string, -- optimizely parameter with active experiment information
+        session_device_category,
+        session_operating_system,
+        lower(first_traffic_source.fixed_source) as source,
+        lower(first_traffic_source.fixed_medium) as medium,
+
+        /* taking attribution values for gads campaigns from special fields */
+        case
+          when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_campaign
+          else first_traffic_source.manual_campaign_name
+        end as campaign,
+        case
+          when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_adgroup_name
+          else first_traffic_source.manual_term
+        end as ad_group,
+        case
+          when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then coalesce(first_traffic_source.fixed_term, first_traffic_source.fixed_ad_name) 
+          else first_traffic_source.manual_content
+        end as ad_name,
+        /*--*/
+        
+        ga_session_key as session_start,
+        if(session_engaged is null, ga_session_key, null) as bounce,
+        if(session_form_click > 0, ga_session_key, null) as form_click,
+        if(session_add_to_cart > 0, ga_session_key, null) as add_to_cart,
+        if(session_add_payment_info > 0, ga_session_key, null) as add_payment_info,
+        if(session_transactions > 0, ga_session_key, null) as session_with_transactions,
+        if(session_experience_impression > 0, ga_session_key, null) as session_with_experiments
+
+    from ${ref('stg_ga4_sessions')}  
+    where session_start_date >= date_checkpoint
+    group by all
+
+),
+
+transactions as (
+    select
+        date,
+        ga_session_key,
+        transaction_id,
+        transaction_type,
+        purchase_revenue
+    from ${ref('stg_ga4_conversions')}
+    where date >= date_checkpoint
+        and purchase_revenue <= 10000 --filtering out outliers
+    group by all 
+    qualify row_number() over (partition by ga_session_key order by date) = 1 --In the case of duplicate transaction IDs across different sessions, retrieve the first occurrence of each transaction
+)
+
+select 
+    s.*,
+    date_trunc(s.date, week(monday)) as week_date,
+    format_date("%Y-%m", s.date) AS month,
+    ${func_channel_grouping.custom_channel_grouping("s.source","medium","campaign","cat.source_category")} as channel,
+    t.transaction_id,
+    t.purchase_revenue,
+    t.transaction_type
+from sessions_base s 
+left join transactions t
+    on s.session_start = t.ga_session_key
+    and s.date = t.date
+left join ${ref('src_source_categories')} cat
+    on s.source = cat.source
+
+
+
+

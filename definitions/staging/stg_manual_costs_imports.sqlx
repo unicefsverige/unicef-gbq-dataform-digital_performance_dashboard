@@ -1,0 +1,84 @@
+config {
+  type: "incremental",
+  schema: constants.STAGING_DATASET,
+  description: "Staging model for data from Google Spreadsheets used for manual cost imports for campaigns.",
+  tags:["manual_costs"],
+  bigquery: {
+    partitionBy: "date"
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where date >= date_checkpoint`)
+  }
+}
+
+with
+  manual_costs_daily as (
+    select 
+      date,
+      source,
+      medium,
+      campaign,
+      sum(costs) as costs
+    from ${ref('manual_costs_daily')}
+    where date >= date_checkpoint
+    group by all
+  ),
+
+-- the following 2 subqueries are to provide daily average costs based on periodic manual costs import
+
+  expanded_dates as (
+    select
+      source,
+      medium,
+      campaign,
+      date,
+      costs / (date_diff(date_end, date_start, DAY) + 1) AS daily_average_cost
+    from
+      ${ref('manual_costs_periodic')},
+      unnest(generate_date_array(date_start, date_end, interval 1 day)) AS date --this is to create an array of dates between date_start and date_end
+  ),
+
+  manual_costs_periodic as (
+    select
+      date,
+      source,
+      medium,
+      campaign,
+      avg(daily_average_cost) AS costs
+    from
+      expanded_dates
+    group by all
+  ),
+
+-- simple union of daily manual import and daily averages
+  manual_costs_unified as (
+    select *
+    from manual_costs_daily
+
+    union all
+
+    select *
+    from manual_costs_periodic
+  )
+
+  select 
+      date,
+      source,
+      medium,
+      campaign,
+      sum(costs) as costs
+  from manual_costs_unified
+  group by all
+
+
+

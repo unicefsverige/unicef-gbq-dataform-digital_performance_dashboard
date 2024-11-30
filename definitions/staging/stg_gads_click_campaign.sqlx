@@ -1,0 +1,118 @@
+config {
+  type: "incremental",
+  schema: constants.STAGING_DATASET,
+  description: "Staging model to get campaign, ad_group, ad and keyword based on gclid",
+  tags:["gads","gads_daily"],
+  bigquery: {
+    partitionBy: "date"
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where date >= date_checkpoint`)
+  }
+}
+
+WITH
+  --getting campaign names
+  campaign_names AS (
+  SELECT
+    campaign_name,
+    campaign_id,
+    customer_id
+  FROM
+    ${ref('p_ads_Campaign_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+  QUALIFY
+    --selecting last known campaign name for specific campaign ID
+    MAX(_PARTITIONTIME) OVER (PARTITION BY campaign_id, customer_id) = _PARTITIONTIME  
+  ),
+
+  --getting ad group names
+  ad_group_names AS (
+  SELECT
+    ad_group_name,
+    ad_group_id,
+    campaign_id,
+    customer_id
+  FROM
+    ${ref('p_ads_AdGroup_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+  QUALIFY
+    --selecting last known ad_group_name for specific Ad Group ID
+    MAX(_PARTITIONTIME) OVER (PARTITION BY ad_group_id, campaign_id, customer_id) = _PARTITIONTIME  
+  ),
+
+  -- getting ad level info 
+  ad_names as (
+    SELECT 
+      campaign_id, 
+      customer_id, 
+      ad_group_id, 
+      ad_group_ad_ad_id, 
+      ad_group_ad_ad_name  
+    FROM ${ref('p_ads_Ad_*')} 
+    WHERE 
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+    QUALIFY
+    --selecting last known campaign name for specific ad_id
+    MAX(_PARTITIONTIME) OVER (PARTITION BY ad_group_ad_ad_id, ad_group_id, campaign_id, customer_id) = _PARTITIONTIME
+  ),
+
+  --getting gclid info
+  gclids AS (
+  SELECT
+    DISTINCT segments_date AS date,
+    customer_id,
+    campaign_id,
+    ad_group_id,
+    click_view_gclid as gclid,
+    /* the click_view_ad_group_ad column contains the ad_id but in a string like this customers/5424083809/adGroupAds/166506883082~705978599746,
+    thus we are extracting any value after "~"*/
+    CAST(REGEXP_EXTRACT(click_view_ad_group_ad,r'~(.+)') AS INT64) AS ad_id,
+    click_view_keyword_info_text as term   
+  FROM
+    ${ref('p_ads_ClickStats_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+    AND TIMESTAMP_TRUNC(_PARTITIONTIME, DAY) >= TIMESTAMP(date_checkpoint)
+  ),  
+
+  --mergin gclid info with names
+  staging AS(
+  SELECT
+      gclids.*,
+      campaign_names.campaign_name,
+      ad_group_names.ad_group_name,
+      ad_names.ad_group_ad_ad_name as ad_name
+  FROM 
+      gclids
+  LEFT JOIN campaign_names ON
+      campaign_names.campaign_id = gclids.campaign_id
+      AND campaign_names.customer_id = gclids.customer_id
+  LEFT JOIN ad_group_names ON
+      ad_group_names.campaign_id = gclids.campaign_id
+      AND ad_group_names.customer_id = gclids.customer_id
+      AND ad_group_names.ad_group_id = gclids.ad_group_id
+  LEFT JOIN ad_names ON
+      ad_names.ad_group_ad_ad_id = gclids.ad_id
+      AND ad_names.campaign_id = gclids.campaign_id
+      AND ad_names.customer_id = gclids.customer_id
+      AND ad_names.ad_group_id = gclids.ad_group_id
+  
+  qualify row_number() over (partition by gclid, gclids.customer_id) = 1    
+  )
+
+SELECT *
+FROM staging  
+
