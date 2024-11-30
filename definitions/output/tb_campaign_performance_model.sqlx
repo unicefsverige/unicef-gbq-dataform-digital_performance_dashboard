@@ -1,0 +1,219 @@
+config {
+  type: "incremental",
+  schema: constants.OUTPUT_DATASET,
+  description: "This model aggregates marketing and ga4 metrics on channel, source, medium, campaign, ad group and content/keyword levels",
+  tags:["ga4","gads","ga4_daily","gads_daily", "channel_group", "merged_daily"],
+  bigquery: {
+    partitionBy: "date",
+    clusterBy: ["campaign","source", "medium","channel"]
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where date >= date_checkpoint`)
+  }
+}
+
+with marketing_daily as (
+    select 
+      date,
+      hostname, 
+      source,
+      medium,
+      campaign,
+      ad_group,
+      ad_name,
+      impressions,
+      clicks,
+      costs
+    from ${ref('tb_all_digital_marketing_metrics')}
+    where date >= date_checkpoint
+),
+
+daily_traffic as (
+    select 
+      session_start_date as date,
+      landing_hostname,
+      lower(first_traffic_source.fixed_source) as source,
+      lower(first_traffic_source.fixed_medium) as medium,
+      
+      /* taking attribution values for gads campaigns from special fields */
+      case
+        when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_campaign
+        else first_traffic_source.manual_campaign_name
+      end as campaign,
+      case
+        when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_adgroup_name
+        else first_traffic_source.manual_term
+      end as ad_group,
+      case
+        when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then coalesce(first_traffic_source.fixed_term, first_traffic_source.fixed_ad_name) 
+        else first_traffic_source.manual_content
+      end as ad_name,
+      /*--*/
+
+      session_device_category as device,
+      count(distinct ga_session_key) as sessions
+    from ${ref('stg_ga4_sessions')}
+    where session_start_date >= date_checkpoint
+    group by all  
+),
+
+conversions_daily as (
+    select 
+      date,
+      landing_hostname,
+      lower(first_traffic_source.fixed_source) as source,
+      lower(first_traffic_source.fixed_medium) as medium,
+      
+      /* taking attribution values for gads campaigns from special fields */
+      case
+        when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_campaign
+        else first_traffic_source.manual_campaign_name
+      end as campaign,
+      case
+        when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_adgroup_name
+        else first_traffic_source.manual_term
+      end as ad_group,
+      case
+        when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then coalesce(first_traffic_source.fixed_term, first_traffic_source.fixed_ad_name) 
+        else first_traffic_source.manual_content
+      end as ad_name,
+      /*--*/
+
+      device,
+      transaction_type,
+      count(distinct transaction_id) as transactions,
+      sum(purchase_revenue) as revenue
+
+      /*Example of how to add metrics other than donations to the model.
+      count(distinct legacy_lead_id) as legacy_lead
+      */
+
+    from ${ref('stg_ga4_conversions')}
+    where date >= date_checkpoint
+      and (purchase_revenue <= 10000 or purchase_revenue is null) --filtering out outliers
+    group by all  
+),
+
+/*The following subquery performs a simple union of all data from marketing sources to sessions to conversions. It is important to maintain exactly the same schemas even if some data points are missing from some sources.*/
+concat_transactions_cost_traffic as (
+    select
+      date,
+      landing_hostname,
+      device,
+      source,
+      medium,
+      campaign,
+      ad_group,
+      ad_name,
+      sessions,
+      null as impressions,
+      null as clicks,
+      null as costs,
+      null as transactions,
+      null as revenue,
+      ${func_channel_grouping.map_transaction_type("source", "medium", "campaign")} as donation_type 
+
+      /*Example of how to add metrics other than donations to the model
+      null as legacy_lead
+      */
+    from daily_traffic  
+
+    union all
+
+    select
+      date,
+      hostname as landing_hostname,
+      '' as device,
+      source,
+      medium,
+      campaign,
+      ad_group,
+      ad_name,
+      null as sessions,
+      impressions,
+      clicks,
+      costs,
+      null as transactions,
+      null as revenue,
+      
+      /*The floowing mapping enables the separation of costs into pledge or cash categories, as well as the independent calculation of CPA for both cash and pledge. 
+      Without consistent naming conventions, this categorisation cannot function correctly.*/
+      ${func_channel_grouping.map_transaction_type("source", "medium", "campaign")} as donation_type 
+      
+      /*Example of how to add metrics other than donations to the model
+      null as legacy_lead
+      */
+    from marketing_daily  
+
+    union all
+
+    select
+      date,
+      landing_hostname,
+      device,
+      source,
+      medium,
+      campaign,
+      ad_group,
+      ad_name,
+      null as sessions,
+      null as impressions,
+      null as clicks,
+      null as costs,
+      transactions,
+      revenue,
+      transaction_type as donation_type,
+
+      /*Example of how to add metrics other than donations to the model
+      legacy_lead
+      */
+    from conversions_daily
+
+
+),
+
+joined as (
+    select
+      date,
+      date_trunc(date, week(monday)) as week_date, --This is important for markets with Monday-to-Monday weeks. Other markets can use the default Looker Studio conversion from date to ISO weeks, which follows the Sunday-to-Sunday format.
+      format_date("%Y-%m", date) AS month,
+      landing_hostname,
+      device,
+      ${func_channel_grouping.custom_channel_grouping("concat.source","medium","campaign","cat.source_category")} as channel,
+      concat.source,
+      medium,
+      campaign,
+      ad_group,
+      ad_name,
+      donation_type,
+      sum(sessions) as sessions,
+      sum(transactions) as transactions,
+      sum(revenue) as revenue,
+      sum(impressions) as impressions,
+      sum(clicks) as clicks,
+      sum(costs) as costs,
+      
+      /*Example of how to add metrics other than donations to the model
+      legacy_lead
+      */
+
+    from concat_transactions_cost_traffic concat 
+    left join ${ref('src_source_categories')} cat
+    on concat.source = cat.source
+    where date >= date_checkpoint
+    group by all
+)
+
+
+select *
+from joined

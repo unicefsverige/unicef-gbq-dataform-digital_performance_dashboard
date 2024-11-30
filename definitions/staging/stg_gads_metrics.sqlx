@@ -1,0 +1,237 @@
+config {
+  type: "incremental",
+  schema: constants.STAGING_DATASET,
+  description: "Staging model for data from Google Ads accounts to retrieve impressions, clicks, and costs for campaigns, ad sets, ads and keywords",
+  tags:["gads","gads_daily"],
+  bigquery: {
+    partitionBy: "date",
+    clusterBy: ["campaign_id", "customer_id"]
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where date >= date_checkpoint`)
+  }
+}
+
+WITH
+  --getting campaign names
+  campaign_info AS (
+  SELECT
+    campaign_name,
+    campaign_id,
+    customer_id
+  FROM
+    ${ref('p_ads_Campaign_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+  QUALIFY
+    --selecting last known campaign name for specific campaign ID
+    MAX(_PARTITIONTIME) OVER (PARTITION BY campaign_id, customer_id) = _PARTITIONTIME  
+  ),
+
+  --getting ad group level names
+  ad_group_info AS (
+  SELECT
+    ad_group_name,
+    ad_group_id,
+    campaign_id,
+    customer_id
+  FROM
+    ${ref('p_ads_AdGroup_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+  QUALIFY
+    --selecting last known ad_group_name for specific Ad Group ID
+    MAX(_PARTITIONTIME) OVER (PARTITION BY ad_group_id, campaign_id, customer_id) = _PARTITIONTIME  
+  ),
+
+  --getting keywords
+  keyword_info AS (
+  SELECT
+    DISTINCT ad_group_criterion_keyword_text as ad_name,
+    ad_group_criterion_criterion_id as ad_id,
+    customer_id,
+    campaign_id,
+    ad_group_id
+  FROM
+      ${ref('p_ads_Keyword_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+  QUALIFY
+    --selecting last known keyword_text for specific criterion ID
+    MAX(_PARTITIONTIME) OVER (PARTITION BY ad_group_id, campaign_id, customer_id) = _PARTITIONTIME  
+  ),
+
+  --getting ad-level names for ad IDs using the Ad tables. Note: The Ad tables also contain Search campaigns that are already included in the Keyword tables.
+  ad_info AS (    
+  SELECT
+    DISTINCT ad_group_ad_ad_name as ad_name,
+    ad_group_ad_ad_id as ad_id,   
+    customer_id,
+    campaign_id,
+    ad_group_id
+  FROM
+      ${ref('p_ads_Ad_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID})
+  QUALIFY
+    --selecting last known ad_name for specific ad id
+    MAX(_PARTITIONTIME) OVER (PARTITION BY ad_group_id, campaign_id, customer_id) = _PARTITIONTIME  
+  ),
+
+  -- merging keywords and ad info to create a single ad-level table and avoid duplicates in subsequent joins
+  ad_level_info AS (
+  SELECT * 
+  FROM keyword_info
+
+  UNION ALL 
+
+  SELECT * 
+  FROM ad_info  
+  WHERE campaign_id not in (select distinct campaign_id from keyword_info)  -- Removing search campaigns as they are already included in the keyword_info table
+  ),
+
+  --extracing campaign level metrics
+  campaign_stats AS (
+  SELECT
+    DISTINCT segments_date AS date,
+    campaign_id,
+    customer_id,
+    SUM(metrics_impressions) AS impressions,
+    SUM(metrics_clicks) AS clicks,
+    ROUND(SUM(metrics_cost_micros)/1000000,2) AS costs,
+  FROM
+    ${ref('p_ads_CampaignBasicStats_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID}) 
+    AND _PARTITIONTIME >= TIMESTAMP(date_checkpoint)
+  GROUP BY all
+  ),
+
+  --extracing ad_group KPIs
+  ad_group_stats AS (
+  SELECT
+    DISTINCT segments_date AS date,
+    campaign_id,
+    customer_id,
+    ad_group_id,
+    SUM(metrics_impressions) AS impressions,
+    SUM(metrics_clicks) AS clicks,
+    ROUND(SUM(metrics_cost_micros)/1000000,2) AS costs,
+  FROM
+    ${ref('p_ads_AdGroupBasicStats_*')}
+  WHERE
+    CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID}) 
+    AND _PARTITIONTIME >= TIMESTAMP(date_checkpoint)
+  GROUP BY all
+  ),
+
+  --extracting keyword KPIs
+  keyword_stats AS (
+    SELECT
+      DISTINCT segments_date AS date,
+      campaign_id,
+      customer_id,
+      ad_group_id,
+      ad_group_criterion_criterion_id as ad_id,
+      SUM(metrics_impressions) AS impressions,
+      SUM(metrics_clicks) AS clicks,
+      ROUND(SUM(metrics_cost_micros)/1000000,2) AS costs,
+    FROM
+      ${ref('p_ads_KeywordBasicStats_*')}
+    WHERE    
+      CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID}) 
+      AND _PARTITIONTIME >= TIMESTAMP(date_checkpoint)
+    GROUP BY all  
+  ),
+
+  -- extracting ad level KPIs. Note: The Ad tables also contain Search campaigns that are already included in the Keyword tables.
+  ad_stats AS (
+    SELECT
+      DISTINCT segments_date AS date,
+      campaign_id,
+      customer_id,
+      ad_group_id,
+      ad_group_ad_ad_id as ad_id, 
+      SUM(metrics_impressions) AS impressions,
+      SUM(metrics_clicks) AS clicks,
+      ROUND(SUM(metrics_cost_micros)/1000000,2) AS costs,
+    FROM
+      ${ref('p_ads_AdBasicStats_*')}
+    WHERE    
+      CAST(_table_suffix AS INT64) in (${constants.GADS_CUSTOMER_ID}) 
+      AND _PARTITIONTIME >= TIMESTAMP(date_checkpoint)
+    GROUP BY all  
+  ),
+
+  -- merging keywords and ad stats to create a single ad-level table and avoid duplicates in subsequent joins
+  ad_level_stats AS (
+  SELECT * 
+  FROM keyword_stats
+
+  UNION ALL 
+
+  SELECT * 
+  FROM ad_stats  
+  WHERE campaign_id not in (select distinct campaign_id from keyword_stats)  -- Removing search campaigns as they are already included in the keyword_stats table
+  ),
+
+
+  --mergin all together
+  staging AS(
+  SELECT
+      c.campaign_id,
+      c.customer_id,
+      c.date,
+      ag.ad_group_id,
+      ad.ad_id,
+      coalesce(ad.costs, ag.costs, c.costs) as costs,
+      coalesce(ad.impressions, ag.impressions, c.impressions) as impressions,
+      coalesce(ad.clicks, ag.clicks, c.clicks) as clicks
+  FROM 
+      campaign_stats c
+  LEFT JOIN ad_group_stats ag ON
+      c.campaign_id = ag.campaign_id
+      AND c.customer_id = ag.customer_id
+      AND c.date = ag.date
+  LEFT JOIN ad_level_stats ad ON
+      ag.campaign_id = ad.campaign_id
+      AND ag.customer_id = ad.customer_id
+      AND ag.ad_group_id = ad.ad_group_id
+      AND ag.date = ad.date
+  ),
+
+  --add names
+  staging_with_names AS (
+  SELECT  
+    s.*,
+    c.campaign_name,
+    ag.ad_group_name,
+    ad.ad_name
+  FROM staging s 
+  LEFT JOIN campaign_info c
+    ON s.customer_id = c.customer_id
+    AND s.campaign_id = c.campaign_id
+  LEFT JOIN ad_group_info ag
+    ON s.customer_id = ag.customer_id
+    AND s.campaign_id = ag.campaign_id
+    AND s.ad_group_id = ag.ad_group_id
+  LEFT JOIN ad_level_info ad
+    ON s.customer_id = ad.customer_id
+    AND s.campaign_id = ad.campaign_id
+    AND s.ad_group_id = ad.ad_group_id 
+    AND s.ad_id = ad.ad_id
+  )
+
+SELECT *
+FROM staging_with_names 
+

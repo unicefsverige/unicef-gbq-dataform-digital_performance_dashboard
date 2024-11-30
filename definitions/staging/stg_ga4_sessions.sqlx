@@ -1,0 +1,171 @@
+config {
+    type: "incremental",
+    schema: constants.STAGING_DATASET,
+    description: "The GA4 sessions model generates one row per session with session-level dimensions.",
+    tags:["ga4","ga4_daily"],
+    bigquery: {
+        partitionBy: "session_start_date",
+        clusterBy: ["user_key", "ga_session_key"]
+    }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(session_start_date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where session_start_date >= date_checkpoint`)
+  }
+}
+
+
+with session_first_last_source as (
+    select
+        user_key,
+        ga_session_key,
+        ga_session_id,
+        user_pseudo_id,
+
+        --session-level metrics
+        min(datetime(timestamp_seconds(ga_session_id), '${constants.GA4_REPORTING_TIME_ZONE}')) as session_start_datetime,
+        min(date(timestamp_seconds(ga_session_id), '${constants.GA4_REPORTING_TIME_ZONE}')) as session_start_date,
+        logical_or(event_name = 'session_start') as has_session_start_event,
+        max(session_engaged) as session_engaged,
+        round(sum(engagement_time_msec / 1000), 2) as engagement_time_seconds,
+        min(datetime(timestamp_seconds(cast(user_first_touch_timestamp / 1000000 as int64)), '${constants.GA4_REPORTING_TIME_ZONE}')) as user_first_visit_datetime,
+        COUNT(event_name) AS session_total_events,
+        COUNT(DISTINCT event_name) AS session_unique_events,
+        COUNTIF(event_name = 'page_view') AS session_page_views,
+        COUNT(DISTINCT page_fullpath) AS session_unique_page_views,
+        COUNTIF(event_name = 'view_promotion') AS session_view_promotion,
+        COUNTIF(event_name = 'select_promotion') AS session_select_promotion,
+        COUNTIF(event_name = 'view_item_list') AS session_view_item_list,
+        COUNTIF(event_name = 'select_item') AS session_select_item,
+        COUNTIF(event_name = 'add_to_cart') AS session_add_to_cart,
+        COUNTIF(event_name = 'begin_checkout') AS session_begin_checkout,
+        COUNTIF(event_name = 'add_payment_info') AS session_add_payment_info,
+        COUNTIF(event_name = 'add_shipping_info') AS session_add_shipping_info,
+        COUNT(DISTINCT IF(event_name = 'purchase', ecommerce.transaction_id, NULL)) AS session_transactions,
+        SUM(IF(ecommerce.purchase_revenue_in_usd < 100000,ecommerce.purchase_revenue_in_usd,0)) AS session_purchase_revenue_usd,
+        SUM(IF(ecommerce.purchase_revenue < 100000,ecommerce.purchase_revenue,0))  AS session_purchase_revenue_local_currency,
+
+        --session-level unicef specific
+        COUNTIF(event_name = 'personal_information') AS session_personal_information,
+        COUNTIF(event_name = 'donation_funnel') AS session_donation_funnel,
+        COUNTIF(event_name = 'donations') AS session_donations,
+        COUNTIF(event_name = 'form_click') AS session_form_click,
+        COUNTIF(event_name = 'experience_impression') AS session_experience_impression, --optimizely specific event. should fire only when visit is considered for an active experiment
+        COUNTIF(event_name = 'payment_details') AS session_payment_details,
+        COUNTIF(event_name = 'payment_failed') AS session_payment_failed,
+        
+        --session first traffic source
+        array_agg(
+            if(coalesce(nullif(collected_traffic_source.fixed_source, '(direct)'), nullif(collected_traffic_source.fixed_medium, '(none)'), nullif(collected_traffic_source.fixed_campaign, '(direct)')) is not null,
+                collected_traffic_source,
+                null
+            )
+            order by
+                event_timestamp asc,
+                event_sort_order asc
+            limit 1
+        ) [safe_offset(0)] as first_traffic_source,
+        --session last non-direct traffic source within the session
+        array_agg(
+                if(coalesce(nullif(collected_traffic_source.fixed_source, '(direct)'), nullif(collected_traffic_source.fixed_medium, '(none)'), nullif(collected_traffic_source.fixed_campaign, '(direct)')) is not null,
+                    collected_traffic_source,
+                    null
+            ) ignore nulls
+            order by
+                event_timestamp desc,
+                event_sort_order asc
+            limit 1
+        ) [safe_offset(0)] as last_non_null_traffic_source
+from ${ref('stg_ga4_events_fixed')}
+    where ga_session_key is not null
+    and event_date >= date_checkpoint
+    and event_date >= date_checkpoint
+    --and event_name not in ('session_start') --this condition could be commented/removed if looking at data post November 2, 2023 when it started being populated.
+    group by
+        user_key,
+        ga_session_key,
+        ga_session_id,
+        user_pseudo_id
+     
+),
+
+landing_and_last as (
+    select distinct 
+        ga_session_key,
+        user_key,
+        first_value(page_fullpath ignore nulls) over (session_window) as landing_page_path,
+        first_value(page_location ignore nulls) over (session_window) as landing_page_location,
+        first_value(page_hostname ignore nulls) over (session_window) as landing_hostname,
+        first_value(event_name ignore nulls) over (session_window) as landing_event,
+
+        --unicef specific parameters
+        first_value(pl_country ignore nulls) over (session_window) as landing_country,
+        first_value(pl_language ignore nulls) over (session_window) as landing_language,
+        first_value(exp_variant_string ignore nulls) over (session_window) as landing_exp_variant_string, --optimizely specific parameter, contains experiment name and variant name
+        first_value(pageOwner ignore nulls) over (session_window) as landing_page_owner,
+        first_value(currency ignore nulls) over (session_window) as landing_currency,
+        first_value(defaultAmountMonthlySelected ignore nulls) over (session_window) as landing_default_amount_monthly_selected,
+        first_value(defaultAmountOnceSelected ignore nulls) over (session_window) as landing_default_amount_once_selected,
+        first_value(defaultAmountsMonthly ignore nulls) over (session_window) as landing_default_amounts_monthly,
+        first_value(defaultAmountsOnce ignore nulls) over (session_window) as landing_default_amounts_once,
+        first_value(defaultDonationType ignore nulls) over (session_window) as landing_default_donation_type,
+
+        last_value(otherAmount ignore nulls) over (session_window) as last_other_amount,
+        last_value(whatsappSignup ignore nulls) over (session_window) as last_whatsapp_signup,
+        last_value(smsSignup ignore nulls) over (session_window) as last_sms_signup,
+        last_value(phoneSignup ignore nulls) over (session_window) as last_phone_signup,
+        last_value(emailSignup ignore nulls) over (session_window) as last_email_signup,
+        last_value(funnelStep ignore nulls) over (session_window) as last_funnel_step,
+        last_value(donationStep ignore nulls) over (session_window) as last_donation_step,
+        last_value(donationType ignore nulls) over (session_window) as last_donation_type,
+
+        --device data
+        first_value(device.category ignore nulls) over (session_window) as session_device_category,
+        first_value(device.mobile_brand_name ignore nulls) over (session_window) as session_mobile_data_brand_name,
+        first_value(device.mobile_model_name ignore nulls) over (session_window) as session_mobile_model_name,
+        first_value(device.mobile_marketing_name ignore nulls) over (session_window) as session_mobile_marketing_name,
+        first_value(device.operating_system ignore nulls) over (session_window) as session_operating_system,
+        first_value(device.operating_system_version ignore nulls) over (session_window) as session_operating_system_version,
+        first_value(device.web_info.browser ignore nulls) over (session_window) as session_browser,
+        first_value(device.web_info.browser_version ignore nulls) over (session_window) as session_browser_version,
+        first_value(device.language ignore nulls) over (session_window) as session_language,
+        --geo data 
+        first_value(geo.continent ignore nulls) over (session_window) as session_continent,
+        first_value(geo.sub_continent ignore nulls) over (session_window) as session_sub_continent,
+        first_value(geo.country ignore nulls) over (session_window) as session_country,
+        first_value(geo.region ignore nulls) over (session_window) as session_region,
+        first_value(geo.city ignore nulls) over (session_window) as session_city,
+        --length
+        min(event_timestamp) over (session_window) as session_start,
+        max(event_timestamp) over (session_window) as session_end,
+        (max(event_timestamp) over (session_window) - min(event_timestamp) over (session_window))/1000000 as session_length_seconds
+        
+    from ${ref('stg_ga4_events_fixed')}
+    where ga_session_key is not null
+    and event_date >= date_checkpoint
+    --and event_name not in ('session_start') --this condition could be commented/removed if looking at data post November 2, 2023 when it started being populated.
+    window 
+    session_window AS (PARTITION BY ga_session_key, user_key ORDER BY event_timestamp, event_sort_order ASC ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)   
+)
+
+
+select
+  s.*,
+  ll.* except (ga_session_key, user_key)
+from session_first_last_source s
+    left join landing_and_last ll 
+        on s.ga_session_key = ll.ga_session_key
+        and s.user_key = ll.user_key
+
+
+
+
+

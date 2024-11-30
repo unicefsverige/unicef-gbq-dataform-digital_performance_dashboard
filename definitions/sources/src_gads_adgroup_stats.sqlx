@@ -1,0 +1,7 @@
+config {
+    type: "declaration",
+    schema: constants.GADS_SOURCE_DATASET,
+    ...(constants.GADS_SOURCE_PROJECT) && {database: constants.GADS_SOURCE_PROJECT},
+    name: "p_ads_AdGroupBasicStats_*",
+    description: "This table stores Google Ads stats data, exported at the ad group level."
+}

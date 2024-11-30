@@ -1,0 +1,114 @@
+config {
+  type: "incremental",
+  schema: constants.OUTPUT_DATASET,
+  description: "This model aggregates daily impressions, clicks and costs from all digital marketing sources",
+  tags:["gads","gads_daily", "meta", "meta_daily", "manual_costs", "merged_daily"],
+  bigquery: {
+    partitionBy: "date",
+    clusterBy: ["campaign", "source", "medium"]
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where date >= date_checkpoint`)
+  }
+}
+
+with gads as (
+    select 
+        date,
+        "" as hostname,
+        "google" as source,
+        "cpc" as medium,
+        campaign_name as campaign,
+        ad_group_name as ad_group,
+        ad_name,
+        sum(impressions) as impressions,
+        sum(clicks) as clicks,
+        sum(costs) as costs
+    from ${ref('stg_gads_metrics')}
+    where date >= date_checkpoint
+    group by all
+),
+
+meta as (
+    select 
+        date,
+        "" as hostname,
+        "facebook" as source,
+        "paid_social" as medium,
+        campaign_name as campaign,
+        ad_set_name as ad_group,
+        ad_name,
+        sum(impressions) as impressions,
+        sum(clicks) as clicks,
+        sum(spend) as costs
+    from ${ref('stg_meta_metrics')}
+    where date >= date_checkpoint
+    group by all
+),
+
+manual_costs as (
+    select 
+        date,
+        "" as hostname,
+        source,
+        medium,
+        campaign,
+        "" as ad_group,
+        "" as ad_name,
+        null as impressions,
+        null as clicks,
+        sum(costs) as costs
+    from ${ref('stg_manual_costs_imports')}
+    where date >= date_checkpoint
+    group by all
+)
+
+/*Example of adding any new marketing sources: in this case, Google Search Console data which should be preprocessed in staging similar to other marketing data sources.
+searchconsole as (
+    select 
+        date,
+        hostname,
+        "google" as source,
+        "organic" as medium,
+        "" as campaign,
+        "" as ad_group,
+        query as ad_name,
+        sum(impressions) as impressions,
+        sum(clicks) as clicks,
+        0.0 as costs
+    from ${ref('stg_searchconsole_metrics')}
+    where date >= date_checkpoint
+    group by all
+),
+*/
+
+select *
+from gads
+
+union all
+
+select *
+from meta
+
+union all
+
+select *
+from manual_costs
+
+/*Example of adding any new marketing sources: in this case, Google Search Console data.
+
+union all
+
+select *
+from searchconsole
+*/

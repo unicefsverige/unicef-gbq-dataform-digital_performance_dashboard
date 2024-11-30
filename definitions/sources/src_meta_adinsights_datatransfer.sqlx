@@ -1,0 +1,7 @@
+config {
+    type: "declaration",
+    schema: constants.META_SOURCE_DATASET,
+    ...(constants.META_SOURCE_PROJECT) && {database: constants.META_SOURCE_PROJECT},
+    name: "AdInsights",
+    description: "This is the table that stores aggregated meta Ad Isights from all accounts connected via GBQ DataTransfer"
+}

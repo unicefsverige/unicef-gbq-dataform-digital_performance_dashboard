@@ -1,0 +1,166 @@
+config {
+  type: "incremental",
+  schema: constants.STAGING_DATASET,
+  description: "Staging model for the GA4 events_* table. Basic column casting and value extractions are performed here. This stage prepares the raw GA4 data for analysis and further processing.",
+  tags:["ga4","ga4_daily"],
+  bigquery: {
+    partitionBy: "event_date",
+    clusterBy: ["event_name","user_key", "ga_session_key"]
+  }
+}
+
+pre_operations {
+  declare event_date_checkpoint default (
+    ${when(incremental(),
+      `select max(event_date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  );
+  declare is_active_user bool default null; --to avoid errors on old tables where this field didn't exist
+
+  declare collected_traffic_source struct<manual_campaign_id array<string>,
+                                        manual_campaign_name array<string>,
+                                        manual_source array<string>,
+                                        manual_medium array<string>,
+                                        manual_term array<string>,
+                                        manual_content array<string>,
+                                        gclid array<string>,
+                                        dclid array<string>,
+                                        srsltid array<string>> default null; --to avoid errors on old tables where this field didn't exist                             
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where event_date >= event_date_checkpoint`)
+  }
+}
+
+with
+  source as (
+    select
+      event_timestamp, --utc
+      datetime(timestamp_micros(event_timestamp), '${constants.GA4_REPORTING_TIME_ZONE}') as event_datetime, --ga4 property reporting time zone
+      cast(event_date as date format 'yyyymmdd') as event_date, --event_date is already reported in ga4 property reporting time zone
+      to_base64(md5(concat(user_pseudo_id, stream_id))) as user_key, --creating a unique user identifier which will be used in all the following queries and should be used for ad hoc analysis
+      to_base64(md5(concat(user_pseudo_id, stream_id, ${helpers.unnestColumn('event_params', 'ga_session_id', 'int_value')}))) as ga_session_key, --creating a unique session identifier which will be used in all the following queries and should be used for ad hoc analysis
+      event_name,
+      event_params,
+      event_previous_timestamp,
+      event_value_in_usd,
+      event_bundle_sequence_id,
+      event_server_timestamp_offset,
+      user_id,
+      user_pseudo_id,
+      user_properties,
+      user_first_touch_timestamp,
+      device,
+      geo,
+      app_info,
+      is_active_user,
+      (
+      select
+        as struct traffic_source.source as source,
+        traffic_source.medium as medium,
+        traffic_source.name as campaign
+      ) as traffic_source,
+      (
+      select
+        as struct collected_traffic_source.manual_campaign_id as manual_campaign_id,
+        collected_traffic_source.manual_campaign_name as manual_campaign_name,
+        collected_traffic_source.manual_source as manual_source,
+        collected_traffic_source.manual_medium as manual_medium,
+        collected_traffic_source.manual_content as manual_content,
+        collected_traffic_source.manual_term as manual_term,
+        collected_traffic_source.gclid as gclid,
+        collected_traffic_source.dclid as dclid
+      ) as collected_traffic_source,
+      stream_id,
+      platform,
+      ecommerce,
+      items,
+      ${helpers.unnestColumn('event_params', 'ga_session_id', 'int_value')} as ga_session_id,
+      ${helpers.unnestColumn('event_params', 'page_location')} as page_location,
+      ${helpers.unnestColumn('event_params', 'ga_session_number', 'int_value')} as ga_session_number,
+      ${helpers.unnestColumn('event_params', 'engagement_time_msec', 'int_value')} as engagement_time_msec,
+      ${helpers.unnestColumn('event_params', 'page_title')} as page_title,
+      ${helpers.unnestColumn('event_params', 'page_referrer')} as page_referrer,
+      NET.HOST(${helpers.unnestColumn('event_params', 'page_location')}) as page_hostname,
+      REGEXP_REPLACE(${helpers.unnestColumn('event_params', 'page_location')}, r'\?.*$', '') AS page_fullpath,
+      (
+      select
+        as struct ${helpers.unnestColumn('event_params', 'source')} as source,
+        ${helpers.unnestColumn('event_params', 'medium')} as medium,
+        ${helpers.unnestColumn('event_params', 'campaign')} as campaign,
+        ${helpers.unnestColumn('event_params', 'content')} as content,
+        ${helpers.unnestColumn('event_params', 'term')} as term,
+        ${helpers.unnestColumn('event_params', 'gclid')} as gclid,
+        ${helpers.unnestColumn('event_params', 'dclid')} as dclid
+      ) as event_traffic_source,
+      coalesce( (${helpers.unnestColumn('event_params', 'session_engaged', 'int_value')}),
+                (case
+                  when (${helpers.unnestColumn('event_params', 'session_engaged')}) = "1" then 1
+                end
+          ) ) as session_engaged,
+
+      privacy_info.analytics_storage AS privacy_analytics_storage,
+      privacy_info.ads_storage AS privacy_ads_storage,
+      privacy_info.uses_transient_token AS privacy_uses_transient_token, 
+
+    /*below are custom parameters specific to unicef, please check if you need more or less custom parameters.
+    If some of them are missing from your GA4 configuration they will simply return null values, no errors will be generated here :) */
+      ${helpers.unnestColumn('event_params', 'donationType')} as donationType,
+      ${helpers.unnestColumn('event_params', 'hitTimestamp')} as hitTimestamp,
+      ${helpers.unnestColumn('event_params', 'fullPageReferrer')} as fullPageReferrer,
+      ${helpers.unnestColumn('event_params', 'originalPageUrl')} as originalPageUrl,
+      ${helpers.unnestColumn('event_params', 'pageCategory')} as pageCategory,
+      ${helpers.unnestColumn('event_params', 'pageSubcategory')} as pageSubcategory,
+      ${helpers.unnestColumn('event_params', 'pageType')} as pageType,
+      ${helpers.unnestColumn('event_params', 'paymentType')} as paymentType,
+      ${helpers.unnestColumn('event_params', 'queryString')} as queryString,
+      ${helpers.unnestColumn('event_params', 'sessionId')} as sessionId,
+      ${helpers.unnestColumn('event_params', 'transaction_id')} as transaction_id,
+      ${helpers.unnestColumn('event_params', 'transactionId')} as transactionId,
+      ${helpers.unnestColumn('event_params', 'eventAction')} as eventAction,
+      ${helpers.unnestColumn('event_params', 'eventLabel')} as eventLabel,
+      ${helpers.unnestColumn('event_params', 'funnelStep')} as funnelStep,
+      ${helpers.unnestColumn('event_params', 'content_id')} as content_id,
+      ${helpers.unnestColumn('event_params', 'content_label')} as content_label,
+      ${helpers.unnestColumn('event_params', 'content_type')} as content_type,
+      REGEXP_EXTRACT(${helpers.unnestColumn('event_params', 'page_location')}, r'[?&]country=([^&]*)') AS pl_country, --special parameter that influence donation widget UI
+      REGEXP_EXTRACT(${helpers.unnestColumn('event_params', 'page_location')}, r'[?&]language=([^&]*)') AS pl_language, --special parameter that influence donation widget UI
+      ${helpers.unnestColumn('event_params', 'country_code')} as country_code,
+      ${helpers.unnestColumn('event_params', 'currency')} as currency,
+      ${helpers.unnestColumn('event_params', 'debugMode')} as debugMode,
+      ${helpers.unnestColumn('event_params', 'dataLayerEvent')} as dataLayerEvent,
+      ${helpers.unnestColumn('event_params', 'defaultAmountMonthlySelected')} as defaultAmountMonthlySelected,
+      ${helpers.unnestColumn('event_params', 'defaultAmountOnceSelected')} as defaultAmountOnceSelected,
+      ${helpers.unnestColumn('event_params', 'defaultAmountsMonthly')} as defaultAmountsMonthly,
+      ${helpers.unnestColumn('event_params', 'defaultAmountsOnce')} as defaultAmountsOnce,
+      ${helpers.unnestColumn('event_params', 'defaultDonationType')} as defaultDonationType,
+      ${helpers.unnestColumn('event_params', 'donationStep')} as donationStep,
+      coalesce(${helpers.unnestColumn('event_params', 'donationAmount', 'int_value')},${helpers.unnestColumn('event_params', 'donationAmount', 'float_value')},${helpers.unnestColumn('event_params', 'donationAmount', 'double_value')}) as donationAmount, 
+      ${helpers.unnestColumn('event_params', 'donorType')} as donorType,
+      ${helpers.unnestColumn('event_params', 'formType')} as formType,
+      ${helpers.unnestColumn('event_params', 'fundType')} as fundType,
+      ${helpers.unnestColumn('event_params', 'fundsDestinations')} as fundsDestinations,
+      ${helpers.unnestColumn('event_params', 'otherAmount')} as otherAmount,
+      ${helpers.unnestColumn('event_params', 'pageOwner')} as pageOwner,
+      ${helpers.unnestColumn('event_params', 'emailSignup')} as emailSignup,
+      ${helpers.unnestColumn('event_params', 'phoneSignup')} as phoneSignup,
+      ${helpers.unnestColumn('event_params', 'smsSignup')} as smsSignup,
+      ${helpers.unnestColumn('event_params', 'whatsappSignup')} as whatsappSignup,
+      ${helpers.unnestColumn('event_params', 'exp_variant_string')} as exp_variant_string, --optimizely specific event_param. indicates eperiment name and variant
+      ${helpers.unnestColumn('event_params', 'languageCode')} as languageCode  
+
+
+    from
+      ${ref('events_*')}
+    where
+      --_table_suffix not like "%intraday%"
+      cast(substr(_table_suffix, -8) as date format 'yyyymmdd' ) <> current_date() --exclude only today's intraday
+      and _table_suffix not like "%fresh%"
+      and cast(substr(_table_suffix, -8) as date format 'yyyymmdd') >= event_date_checkpoint
+  )
+
+select
+  *
+from
+  source
