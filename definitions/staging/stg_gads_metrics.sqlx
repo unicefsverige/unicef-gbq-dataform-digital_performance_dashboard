@@ -186,7 +186,7 @@ WITH
   ),
 
 
-  --mergin all together
+  --mergin all metrics together
   staging AS(
   SELECT
       c.campaign_id,

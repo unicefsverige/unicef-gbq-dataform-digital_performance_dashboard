@@ -53,7 +53,7 @@ with conversions as (
             else null
         end as legacy_lead_id 
         --
-        also, don't forget to include the event in the WHERE clause below. */
+        also, don't forget to include the event_name in the WHERE clause below. */
 
     from ${ref('stg_ga4_events_fixed')}
     where ga_session_key is not null

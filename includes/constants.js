@@ -8,7 +8,7 @@ Follow the comments and substitute all demo info with your data. */
 const DATAFORM_LOOKBACK_WINDOW = 4; /*number of days to be updated with incremental runs of dataform*/
 const STAGING_DATASET = "demo_dataform_staging"; /*GBQ dataset to store all staging tables*/
 const OUTPUT_DATASET = "demo_dataform_output"; /*GBQ dataset to store all tables/models to be used in production*/
-const START_DATE = 20241120; /* data will be pulled starting this date (format: YYYYMMDD) */
+const START_DATE = 20241220; /* data will be pulled starting this date (format: YYYYMMDD) */
 
 /* GA4 specific variables */
 const GA4_SOURCE_PROJECT = "" /* specify a value here only in case your source data sits in a project other than the default defined in workflow_settings.yaml defaultDatabase variable. You would need to grant the Dataform service account BigQuery Data Viewer and BigQuery Job User access to the dataset. */
@@ -53,4 +53,6 @@ module.exports = {
     META_ACCOUNT_ID,
     GDRIVE_SOURCE_PROJECT,
     GDRIVE_SOURCE_DATASET
+    /*SC_SOURCE_PROJECT,
+    SC_SOURCE_DATASET*/
 };

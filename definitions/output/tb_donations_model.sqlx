@@ -1,0 +1,127 @@
+config {
+  type: "incremental",
+  schema: constants.OUTPUT_DATASET,
+  description: "This model is based on GA4 data and is designed for use in Looker Studio for Path to Conversion and Donation Range reports",
+  tags:["ga4","ga4_daily", "channel_group"],
+  bigquery: {
+    partitionBy: "donation_date",
+    clusterBy: ["user_acquisition_channel","donation_channel"]
+  }
+}
+
+pre_operations {
+  declare date_checkpoint default (
+    ${when(incremental(),
+      `select max(donation_date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
+      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
+    }
+  )
+  ---
+  ${when(incremental(),
+    `delete from ${self()} where donation_date >= date_checkpoint`)
+  }
+}
+
+with donations as (
+    select
+        date as donation_date,
+        ga_session_key,
+        user_key,
+        transaction_id,
+        transaction_type as donation_type,
+
+        /*donation-level attribution*/
+        lower(first_traffic_source.fixed_source) as donation_source,
+        lower(first_traffic_source.fixed_medium) as donation_medium,
+        -- taking attribution values for gads campaigns from special fields 
+        case
+          when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_campaign
+          else first_traffic_source.manual_campaign_name
+        end as donation_campaign,
+        case
+          when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then first_traffic_source.fixed_adgroup_name
+          else first_traffic_source.manual_term
+        end as donation_ad_group,
+        case
+          when (first_traffic_source.fixed_source = "google" and first_traffic_source.fixed_medium = "cpc") then coalesce(first_traffic_source.fixed_term, first_traffic_source.fixed_ad_name) 
+          else first_traffic_source.manual_content
+        end as donation_ad_name,
+        /* end of donation-level attribution*/
+
+        device,
+        landing_hostname,
+        payment_type,
+        purchase_revenue as donation_amount,
+        /* Adapt the following grouping to your market's needs and preferences. */
+        case
+            when purchase_revenue < 10 then "A < 10"
+            when (purchase_revenue >= 10 and purchase_revenue < 20)  then "B >= 10 - < 20"
+            when (purchase_revenue >= 20 and purchase_revenue < 40)  then "C >= 20 - < 40"
+            when (purchase_revenue >= 40 and purchase_revenue < 60)  then "D >= 40 - < 60"
+            when (purchase_revenue >= 60 and purchase_revenue < 80)  then "E >= 60 - < 80"
+            when (purchase_revenue >= 80 and purchase_revenue < 100)  then "F >= 80 - < 100"
+            when (purchase_revenue >= 100 and purchase_revenue < 120)  then "G >= 100 - < 120"
+            when (purchase_revenue >= 120 and purchase_revenue < 140)  then "H >= 120 - < 140"
+            when (purchase_revenue >= 140 and purchase_revenue < 200)  then "I >= 140 - < 200"
+            when (purchase_revenue >= 200 and purchase_revenue < 250)  then "J >= 200 - < 250"
+            when (purchase_revenue >= 250 and purchase_revenue < 350)  then "K >= 250 - < 350"
+            when purchase_revenue>= 350  then "L >= 350"
+            else null
+        end as donation_range
+    from ${ref('stg_ga4_conversions')}
+    where date >= date_checkpoint
+        and purchase_revenue <= 10000 --filtering out outliers
+        and transaction_id is not null --excluding all non transactional conversions
+    group by all 
+    qualify row_number() over (partition by ga_session_key order by date) = 1 --In the case of duplicate transaction IDs across different sessions, retrieve the first occurrence of each transaction
+),
+
+user_acquisition as (
+    select 
+        user_key,
+
+        /*user-level attribution*/
+        lower(first_user_traffic_source.fixed_source) as user_source,
+        lower(first_user_traffic_source.fixed_medium) as user_medium,
+        -- taking attribution values for gads campaigns from special fields 
+        case
+          when (first_user_traffic_source.fixed_source = "google" and first_user_traffic_source.fixed_medium = "cpc") then first_user_traffic_source.fixed_campaign
+          else first_user_traffic_source.manual_campaign_name
+        end as user_campaign,
+        case
+          when (first_user_traffic_source.fixed_source = "google" and first_user_traffic_source.fixed_medium = "cpc") then first_user_traffic_source.fixed_adgroup_name
+          else first_user_traffic_source.manual_term
+        end as user_ad_group,
+        case
+          when (first_user_traffic_source.fixed_source = "google" and first_user_traffic_source.fixed_medium = "cpc") then coalesce(first_user_traffic_source.fixed_term, first_user_traffic_source.fixed_ad_name) 
+          else first_user_traffic_source.manual_content
+        end as user_ad_name,
+        /* end of user-level attribution*/
+
+
+    from ${ref('stg_ga4_users_view')}
+    where user_key in (select distinct user_key from donations) --retrieve data for users who donated within a specific period only.
+)
+
+
+select 
+    donations.*,
+    date_trunc(donation_date, week(monday)) as donation_week_date, --for the markets with monday to monday week
+    format_date("%Y-%m", donation_date) AS donation_month,
+    user_source,
+    user_medium,
+    user_campaign,
+    user_ad_group,
+    user_ad_name,
+    ${func_channel_grouping.custom_channel_grouping("donation_source","donation_medium","donation_campaign","cat.source_category")} as donation_channel,
+    ${func_channel_grouping.custom_channel_grouping("user_source","user_medium","user_campaign","cat.source_category")} as user_acquisition_channel
+from donations 
+left join user_acquisition users
+    on donations.user_key = users.user_key
+left join ${ref('src_source_categories')} cat
+    on donation_source = cat.source
+    and user_source = cat.source
+
+
+
+

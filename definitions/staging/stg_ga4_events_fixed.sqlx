@@ -37,6 +37,11 @@ with staging as (
             event_traffic_source.term as term,
             event_traffic_source.gclid as gclid,
             event_traffic_source.dclid as dclid,
+        /*
+        Below, we use two functions from includes/helpers.js:
+        1. fixPaidGoogleTrafficSource, which corrects Google's issue of incorrectly assigning an (organic) medium to Google Paid Traffic and imports values for campaign names or keywords based on GCLIDs.
+        2. getPaidGoogleTraffic, which adds values from Google Ads tables based on GCLIDs for Google Paid Traffic.
+         */    
             ${helpers.fixPaidGoogleTrafficSource('event_traffic_source', 'source', 'stg_events', null)} as fixed_source,
             ${helpers.fixPaidGoogleTrafficSource('event_traffic_source', 'medium', 'stg_events', null)} as fixed_medium,
             ${helpers.fixPaidGoogleTrafficSource('event_traffic_source', 'campaign', 'stg_events', 'stg_ads_click_campaign.campaign_name')} as fixed_campaign,
@@ -47,6 +52,11 @@ with staging as (
         (
         select
         as struct
+        /*
+        Below, we use two functions from includes/helpers.js:
+        1. fixPaidGoogleTrafficSource, which corrects Google's issue of incorrectly assigning an (organic) medium to Google Paid Traffic and imports values for campaign names or keywords based on GCLIDs.
+        2. getPaidGoogleTraffic, which adds values from Google Ads tables based on GCLIDs for Google Paid Traffic.
+         */ 
             ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_source', 'stg_events', null)} as fixed_source,
             ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_medium', 'stg_events', null)} as fixed_medium,
             ${helpers.fixPaidGoogleTrafficSource('collected_traffic_source', 'manual_campaign_name', 'stg_events', 'stg_ads_click_campaign.campaign_name')} as fixed_campaign,

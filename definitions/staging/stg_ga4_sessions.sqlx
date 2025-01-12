@@ -67,7 +67,7 @@ with session_first_last_source as (
             if(coalesce(nullif(collected_traffic_source.fixed_source, '(direct)'), nullif(collected_traffic_source.fixed_medium, '(none)'), nullif(collected_traffic_source.fixed_campaign, '(direct)')) is not null,
                 collected_traffic_source,
                 null
-            )
+            ) ignore nulls
             order by
                 event_timestamp asc,
                 event_sort_order asc
@@ -86,7 +86,6 @@ with session_first_last_source as (
         ) [safe_offset(0)] as last_non_null_traffic_source
 from ${ref('stg_ga4_events_fixed')}
     where ga_session_key is not null
-    and event_date >= date_checkpoint
     and event_date >= date_checkpoint
     --and event_name not in ('session_start') --this condition could be commented/removed if looking at data post November 2, 2023 when it started being populated.
     group by
