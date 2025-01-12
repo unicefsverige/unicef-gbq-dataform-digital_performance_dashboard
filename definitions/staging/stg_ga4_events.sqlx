@@ -1,7 +1,7 @@
 config {
   type: "incremental",
   schema: constants.STAGING_DATASET,
-  description: "Staging model for the GA4 events_* table. Basic column casting and value extractions are performed here. This stage prepares the raw GA4 data for analysis and further processing.",
+  description: "Staging model for the GA4 events_* tables. Basic column casting and value extractions are performed here. This stage prepares the raw GA4 data for analysis and further processing.",
   tags:["ga4","ga4_daily"],
   bigquery: {
     partitionBy: "event_date",

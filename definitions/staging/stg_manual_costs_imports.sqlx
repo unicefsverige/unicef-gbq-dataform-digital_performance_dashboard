@@ -28,6 +28,8 @@ with
       source,
       medium,
       campaign,
+      account_id,
+      account_name,
       sum(costs) as costs
     from ${ref('manual_costs_daily')}
     where date >= date_checkpoint
@@ -42,6 +44,8 @@ with
       medium,
       campaign,
       date,
+      account_id,
+      account_name,
       costs / (date_diff(date_end, date_start, DAY) + 1) AS daily_average_cost
     from
       ${ref('manual_costs_periodic')},
@@ -54,6 +58,8 @@ with
       source,
       medium,
       campaign,
+      account_id,
+      account_name,
       avg(daily_average_cost) AS costs
     from
       expanded_dates
@@ -76,6 +82,8 @@ with
       source,
       medium,
       campaign,
+      account_id,
+      account_name,
       sum(costs) as costs
   from manual_costs_unified
   group by all
