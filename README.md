@@ -93,7 +93,7 @@ We highly recommend setting up a test environment. For this purpose, a connected
 2. Perform any changes within the test development space and commit to the Git remote branch with the same name as your test space. This way, you will not affect your main branch and can safely run any tests you need.
 3. Create a new test Release configuration inside Dataform and connect it to your test branch. In the compilation overrides settings, add schema suffix: `test`.
 4. Create a new workflow configuration inside Dataform using your test release configuration.
-5. Update your test release (this will get the latest version from your test Git branch) and run your test workflow configuration (this will create all tables inside new data sources with the suffix `test`).
+5. Update your test release (this will get the latest version from your test Git branch) and run your test workflow configuration (this will create all tables inside new data sets with the suffix `test`).
 6. Create a copy of your Looker Studio dashboard and connect it to the test tables in GBQ.
 7. Your test environment is now ready and can be reused without the need to set it up multiple times.
 
