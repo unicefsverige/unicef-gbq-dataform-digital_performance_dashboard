@@ -63,7 +63,6 @@ Please ensure you meet all the requirements before working on the Dataform imple
 4. The output datasets used in the Looker Studio Demo Dashboard are:
     - `tb_campaign_performance_model` is the main model used in most of the Digital Performance Tabs.
     - `tb_landing_page_funnel_model` is used in most of the On-Site Performance Tabs.
-    - `tb_donations_model` is used in the Donations Sections (TBC).
 
 5. Once you have the output models correctly generated, you can copy the Looker Studio Demo and substitute the demo sources with your GBQ tables. The dashboard should instantly work with your data as it is based on the same data schemas. If you add more metrics to the final models, make sure to adapt these metrics in the Looker Studio configurations.
 
