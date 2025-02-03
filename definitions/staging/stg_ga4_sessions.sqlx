@@ -54,13 +54,9 @@ with session_first_last_source as (
         SUM(IF(ecommerce.purchase_revenue < 100000,ecommerce.purchase_revenue,0))  AS session_purchase_revenue_local_currency,
 
         --session-level unicef specific
-        COUNTIF(event_name = 'personal_information') AS session_personal_information,
-        COUNTIF(event_name = 'donation_funnel') AS session_donation_funnel,
-        COUNTIF(event_name = 'donations') AS session_donations,
         COUNTIF(event_name = 'form_click') AS session_form_click,
         COUNTIF(event_name = 'experience_impression') AS session_experience_impression, --optimizely specific event. should fire only when visit is considered for an active experiment
-        COUNTIF(event_name = 'payment_details') AS session_payment_details,
-        COUNTIF(event_name = 'payment_failed') AS session_payment_failed,
+
         
         --session first traffic source
         array_agg(
@@ -123,7 +119,6 @@ landing_and_last as (
         last_value(phoneSignup ignore nulls) over (session_window) as last_phone_signup,
         last_value(emailSignup ignore nulls) over (session_window) as last_email_signup,
         last_value(funnelStep ignore nulls) over (session_window) as last_funnel_step,
-        last_value(donationStep ignore nulls) over (session_window) as last_donation_step,
         last_value(donationType ignore nulls) over (session_window) as last_donation_type,
 
         --device data
