@@ -84,6 +84,7 @@ with
       ${helpers.unnestColumn('event_params', 'page_referrer')} as page_referrer,
       NET.HOST(${helpers.unnestColumn('event_params', 'page_location')}) as page_hostname,
       REGEXP_REPLACE(${helpers.unnestColumn('event_params', 'page_location')}, r'\?.*$', '') AS page_fullpath,
+      REGEXP_EXTRACT(${helpers.unnestColumn('event_params', 'page_location')}, r'\?(.*)') AS page_querystring,
       (
       select
         as struct ${helpers.unnestColumn('event_params', 'source')} as source,
@@ -107,50 +108,41 @@ with
     /*below are custom parameters specific to unicef, please check if you need more or less custom parameters.
     If some of them are missing from your GA4 configuration they will simply return null values, no errors will be generated here :) */
       ${helpers.unnestColumn('event_params', 'donationType')} as donationType,
-      ${helpers.unnestColumn('event_params', 'hitTimestamp')} as hitTimestamp,
-      ${helpers.unnestColumn('event_params', 'fullPageReferrer')} as fullPageReferrer,
-      ${helpers.unnestColumn('event_params', 'originalPageUrl')} as originalPageUrl,
-      ${helpers.unnestColumn('event_params', 'pageCategory')} as pageCategory,
-      ${helpers.unnestColumn('event_params', 'pageSubcategory')} as pageSubcategory,
-      ${helpers.unnestColumn('event_params', 'pageType')} as pageType,
+      ${helpers.unnestColumn('event_params', 'hitTimestamp')} as hitTimestamp, --timestamp of user's browser
+      ${helpers.unnestColumn('event_params', 'fullPageReferrer')} as fullPageReferrer, 
+      ${helpers.unnestColumn('event_params', 'pageType')} as pageType, 
       ${helpers.unnestColumn('event_params', 'paymentType')} as paymentType,
-      ${helpers.unnestColumn('event_params', 'queryString')} as queryString,
-      ${helpers.unnestColumn('event_params', 'sessionId')} as sessionId,
-      ${helpers.unnestColumn('event_params', 'transaction_id')} as transaction_id,
-      ${helpers.unnestColumn('event_params', 'transactionId')} as transactionId,
-      ${helpers.unnestColumn('event_params', 'eventAction')} as eventAction,
+      ${helpers.unnestColumn('event_params', 'sessionId')} as sessionId, --random sessionId assigned by a CMS
+      ${helpers.unnestColumn('event_params', 'transaction_id')} as transaction_id, --CMS transaction ID
+      ${helpers.unnestColumn('event_params', 'transactionId')} as transactionId, --payment provider transaction ID
+      ${helpers.unnestColumn('event_params', 'eventAction')} as eventAction, 
       ${helpers.unnestColumn('event_params', 'eventLabel')} as eventLabel,
       ${helpers.unnestColumn('event_params', 'funnelStep')} as funnelStep,
-      ${helpers.unnestColumn('event_params', 'content_id')} as content_id,
-      ${helpers.unnestColumn('event_params', 'content_label')} as content_label,
-      ${helpers.unnestColumn('event_params', 'content_type')} as content_type,
       REGEXP_EXTRACT(${helpers.unnestColumn('event_params', 'page_location')}, r'[?&]country=([^&]*)') AS pl_country, --special parameter that influence donation widget UI
       REGEXP_EXTRACT(${helpers.unnestColumn('event_params', 'page_location')}, r'[?&]language=([^&]*)') AS pl_language, --special parameter that influence donation widget UI
-      ${helpers.unnestColumn('event_params', 'country_code')} as country_code,
-      ${helpers.unnestColumn('event_params', 'currency')} as currency,
-      ${helpers.unnestColumn('event_params', 'debugMode')} as debugMode,
-      ${helpers.unnestColumn('event_params', 'dataLayerEvent')} as dataLayerEvent,
+      ${helpers.unnestColumn('event_params', 'country_code')} as country_code, --populated by CMS
+      ${helpers.unnestColumn('event_params', 'languageCode')} as languageCode, --populated by CMS and reflects the donation form language settings  
+      ${helpers.unnestColumn('event_params', 'currency')} as currency, 
+      ${helpers.unnestColumn('event_params', 'debugMode')} as debugMode, --check if this is used by your market, otherwise use the standard debug_mode
+      ${helpers.unnestColumn('event_params', 'debug_mode')} as debug_mode, --standard debug mode parameter of ga4
       ${helpers.unnestColumn('event_params', 'defaultAmountMonthlySelected')} as defaultAmountMonthlySelected,
       ${helpers.unnestColumn('event_params', 'defaultAmountOnceSelected')} as defaultAmountOnceSelected,
       ${helpers.unnestColumn('event_params', 'defaultAmountsMonthly')} as defaultAmountsMonthly,
       ${helpers.unnestColumn('event_params', 'defaultAmountsOnce')} as defaultAmountsOnce,
       ${helpers.unnestColumn('event_params', 'defaultDonationType')} as defaultDonationType,
-      ${helpers.unnestColumn('event_params', 'donationStep')} as donationStep,
+      ${helpers.unnestColumn('event_params', 'otherAmount')} as otherAmount,
       coalesce(${helpers.unnestColumn('event_params', 'donationAmount', 'int_value')},${helpers.unnestColumn('event_params', 'donationAmount', 'float_value')},${helpers.unnestColumn('event_params', 'donationAmount', 'double_value')}) as donationAmount, 
-      ${helpers.unnestColumn('event_params', 'donorType')} as donorType,
-      ${helpers.unnestColumn('event_params', 'formType')} as formType,
+      ${helpers.unnestColumn('event_params', 'donorType')} as donorType, --set on donation form level, populated by CMS.
+      ${helpers.unnestColumn('event_params', 'formType')} as formType, 
       ${helpers.unnestColumn('event_params', 'fundType')} as fundType,
       ${helpers.unnestColumn('event_params', 'fundsDestinations')} as fundsDestinations,
-      ${helpers.unnestColumn('event_params', 'otherAmount')} as otherAmount,
-      ${helpers.unnestColumn('event_params', 'pageOwner')} as pageOwner,
-      ${helpers.unnestColumn('event_params', 'emailSignup')} as emailSignup,
+      ${helpers.unnestColumn('event_params', 'pageOwner')} as pageOwner, 
+      ${helpers.unnestColumn('event_params', 'emailSignup')} as emailSignup, 
       ${helpers.unnestColumn('event_params', 'phoneSignup')} as phoneSignup,
       ${helpers.unnestColumn('event_params', 'smsSignup')} as smsSignup,
       ${helpers.unnestColumn('event_params', 'whatsappSignup')} as whatsappSignup,
       ${helpers.unnestColumn('event_params', 'exp_variant_string')} as exp_variant_string, --optimizely specific event_param. indicates eperiment name and variant
-      ${helpers.unnestColumn('event_params', 'languageCode')} as languageCode  
-
-
+      ${helpers.unnestColumn('event_params', 'errorMessage')} as errorMessage
     from
       ${ref('events_*')}
     where
