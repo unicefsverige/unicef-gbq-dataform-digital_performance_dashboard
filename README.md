@@ -11,7 +11,7 @@ Please ensure you meet all the requirements before working on the Dataform imple
 ## Access
 
 1. **Request access to our Demo AA Dashboard in Looker Studio** to reference the visualizations possible with this kind of backend solution:
-   - [Looker Studio Demo AA Dashboard](https://lookerstudio.google.com/reporting/601391ca-c3f1-4e44-89b3-364c5d7b4705/page/p_ktij20osmd)
+   - [Looker Studio Demo AA Dashboard](https://lookerstudio.google.com/reporting/c02948d1-d003-47fb-b047-43550f87d369/page/p_ktij20osmd)
 
 2. **Ensure your Google Cloud instance is activated**. This repository is built for Dataform, which is part of Google BigQuery.
    - [Learn More about Dataform](https://cloud.google.com/dataform/?hl=en)
@@ -63,7 +63,6 @@ Please ensure you meet all the requirements before working on the Dataform imple
 4. The output datasets used in the Looker Studio Demo Dashboard are:
     - `tb_campaign_performance_model` is the main model used in most of the Digital Performance Tabs.
     - `tb_landing_page_funnel_model` is used in most of the On-Site Performance Tabs.
-    - `tb_donations_model` is used in the Donations Sections (TBC).
 
 5. Once you have the output models correctly generated, you can copy the Looker Studio Demo and substitute the demo sources with your GBQ tables. The dashboard should instantly work with your data as it is based on the same data schemas. If you add more metrics to the final models, make sure to adapt these metrics in the Looker Studio configurations.
 
@@ -83,6 +82,15 @@ The following APIs must be enabled.
 - BigQuery API
 - Dataform API
 - Workflows API
+
+## Required Roles for Dataform Service Accounts
+If this is your first Dataform project, you may need to assign the following roles to your service account:  
+- *BigQuery Data Editor*  
+- *BigQuery Data Viewer* 
+- *BigQuery Job User* 
+- *BigQuery Data Owner*
+
+For more details, please refer to [this guide](https://cloud.google.com/dataform/docs/access-control#about-service-accounts).
 
 ## Currency
 The base configuration uses local currency by default for reporting. If the currency settings of some of your marketing accounts or GA4 properties do not match, it is possible to adapt the pipeline to your local needs. Customization of queries will be required. 
