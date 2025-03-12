@@ -104,7 +104,8 @@ from staging
 /*if you want to include hits from all domains available in your GA4 property remove the following where clause. 
 This is to include only "real" hits, excluding those from test environments. The list should be correctly populated in constants.js */
 where page_hostname in (${constants.GA4_DOMAINS_LIST}) 
-and coalesce(debugMode,debug_mode) = "false"
+--The following row can be used to exclude staging traffic when debug mode is activated by developers or tracking specialists during testing.
+--and (coalesce(debugMode,debug_mode) is null or safe_cast(coalesce(debugMode,debug_mode) as string) = "false" )
 
 
 
