@@ -1,23 +1,10 @@
 config {
-  type: "incremental",
+  type: "table",
   schema: constants.STAGING_DATASET,
   description: "Staging model for data from Google Spreadsheets used for manual cost imports for campaigns.",
   tags:["manual_costs"],
   bigquery: {
     partitionBy: "date"
-  }
-}
-
-pre_operations {
-  declare date_checkpoint default (
-    ${when(incremental(),
-      `select max(date) -${constants.DATAFORM_LOOKBACK_WINDOW} from ${self()}`,
-      `select cast('${constants.START_DATE}' as date format 'yyyymmdd')`)
-    }
-  )
-  ---
-  ${when(incremental(),
-    `delete from ${self()} where date >= date_checkpoint`)
   }
 }
 
@@ -32,7 +19,6 @@ with
       account_name,
       sum(costs) as costs
     from ${ref('manual_costs_daily')}
-    where date >= date_checkpoint
     group by all
   ),
 
@@ -87,6 +73,7 @@ with
       sum(costs) as costs
   from manual_costs_unified
   group by all
+  having date is not null
 
 
 
